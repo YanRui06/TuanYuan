@@ -28,7 +28,7 @@ if 'class_name' not in st.session_state:
     st.session_state.class_name = ""
 
 if 'total_members' not in st.session_state:
-    st.session_state.total_members = 0
+    st.session_state.total_members = 1
 
 # 核心函数：校验优秀比例和评优资格
 def validate_evaluation(df, total_members):
