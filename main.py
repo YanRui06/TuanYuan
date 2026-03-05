@@ -23,6 +23,26 @@ ID_LAST4_FIELD = "身份证后4位"
 # 常量定义（数据持久化文件）
 DATA_FILE = "member_data.csv"
 VOTES_FILE = "votes_data.csv"
+# 评议等级权重配置（可调整）
+GRADE_WEIGHTS = {
+    "自评权重": 0.4,
+    "互评权重": 0.6
+}
+# 等级分数映射（用于计算）
+GRADE_SCORES = {
+    "优秀": 4,
+    "合格": 3,
+    "基本合格": 2,
+    "不合格": 1,
+    "": 0  # 空值
+}
+# 等级分数阈值
+GRADE_THRESHOLDS = {
+    "优秀": 3.5,    # ≥3.5 为优秀
+    "合格": 2.5,    # ≥2.5 且 <3.5 为合格
+    "基本合格": 1.5, # ≥1.5 且 <2.5 为基本合格
+    "不合格": 0     # <1.5 为不合格
+}
 
 # ===================== 数据持久化核心函数 =====================
 def load_member_data():
@@ -165,6 +185,75 @@ def verify_id_last4(name, input_id_last4):
     else:
         return False, "身份证后4位输入错误，请重新输入"
 
+def calculate_final_grade(self_grade, mutual_grade, is_new_member, has_punishment):
+    """
+    自动计算最终评议等级
+    :param self_grade: 自评等级
+    :param mutual_grade: 互评等级
+    :param is_new_member: 是否新团员（未满一年）
+    :param has_punishment: 是否有处分/挂科
+    :return: 最终评议等级、计算说明
+    """
+    # 1. 新团员直接返回"不参评"
+    if is_new_member == "是":
+        return "不参评", "新团员（未满一年），不参与评议"
+    
+    # 2. 有处分/挂科的团员，最高只能评"合格"
+    punishment_note = ""
+    if has_punishment == "是":
+        punishment_note = "有处分/挂科，最高等级为合格；"
+    
+    # 3. 转换等级为分数
+    self_score = GRADE_SCORES.get(self_grade, 0)
+    mutual_score = GRADE_SCORES.get(mutual_grade, 0)
+    
+    # 4. 计算加权平均分
+    if self_score == 0 and mutual_score == 0:
+        return "", "自评和互评数据为空，无法计算"
+    
+    weighted_score = (self_score * GRADE_WEIGHTS["自评权重"]) + (mutual_score * GRADE_WEIGHTS["互评权重"])
+    
+    # 5. 根据阈值确定等级
+    final_grade = ""
+    if weighted_score >= GRADE_THRESHOLDS["优秀"]:
+        final_grade = "优秀"
+    elif weighted_score >= GRADE_THRESHOLDS["合格"]:
+        final_grade = "合格"
+    elif weighted_score >= GRADE_THRESHOLDS["基本合格"]:
+        final_grade = "基本合格"
+    else:
+        final_grade = "不合格"
+    
+    # 6. 应用处分限制（最高合格）
+    if has_punishment == "是" and final_grade == "优秀":
+        final_grade = "合格"
+    
+    # 7. 生成计算说明
+    calc_note = f"{punishment_note}自评({self_grade}={self_score}分)×{GRADE_WEIGHTS['自评权重']} + 互评({mutual_grade}={mutual_score}分)×{GRADE_WEIGHTS['互评权重']} = {weighted_score:.2f}分 → {final_grade}"
+    
+    return final_grade, calc_note
+
+def batch_calculate_final_grades():
+    """批量计算所有团员的最终评议等级"""
+    df = st.session_state.member_data.copy()
+    calc_notes = []
+    
+    for idx, row in df.iterrows():
+        final_grade, calc_note = calculate_final_grade(
+            self_grade=row['自评等级'],
+            mutual_grade=row['互评等级'],
+            is_new_member=row['是否新团员(未满一年)'],
+            has_punishment=row['是否有处分/挂科']
+        )
+        df.loc[idx, '最终评议等级'] = final_grade
+        calc_notes.append(f"{row['姓名']}：{calc_note}")
+    
+    # 更新会话状态和保存数据
+    st.session_state.member_data = df
+    save_member_data(df)
+    
+    return df, calc_notes
+
 # ===================== 页面主体 =====================
 # 侧边栏：角色选择
 st.sidebar.title("📋 系统导航")
@@ -177,7 +266,7 @@ role = st.sidebar.radio(
 st.sidebar.info("💡 提示：管理员先录入名册，团员再进行投票")
 st.sidebar.divider()
 st.sidebar.markdown("#### 📞 操作说明")
-st.sidebar.markdown("1. 管理员：输入密码登录 → 导入名单 → 查看投票 → 结算结果\n2. 团员：验证身份 → 完成互评/自评 → 提交")
+st.sidebar.markdown("1. 管理员：输入密码登录 → 导入名单 → 查看投票 → 计算最终等级 → 导出结果\n2. 团员：验证身份 → 完成互评/自评 → 提交")
 
 # ===================== 管理员后台（新增密码验证）=====================
 if role == "👑 管理员后台":
@@ -208,6 +297,23 @@ if role == "👑 管理员后台":
         if st.sidebar.button("🚪 退出管理员登录", type="secondary", key="admin_logout_btn"):
             st.session_state.admin_logged = False
             st.rerun()
+
+        # 显示评议权重配置
+        st.sidebar.subheader("⚙️ 评议配置")
+        st.sidebar.markdown("#### 等级权重设置")
+        self_weight = st.sidebar.slider(
+            "自评权重",
+            min_value=0.0,
+            max_value=1.0,
+            value=GRADE_WEIGHTS["自评权重"],
+            step=0.1,
+            key="self_weight_slider"
+        )
+        mutual_weight = 1.0 - self_weight
+        st.sidebar.write(f"互评权重：{mutual_weight:.1f}")
+        # 更新权重配置
+        GRADE_WEIGHTS["自评权重"] = self_weight
+        GRADE_WEIGHTS["互评权重"] = mutual_weight
 
         # 第一步：团支部基础信息设置
         st.subheader("📋 第一步：团支部基础信息")
@@ -432,7 +538,7 @@ if role == "👑 管理员后台":
                 )
 
                 # 操作按钮（设置唯一key）
-                col5, col6 = st.columns(2)
+                col5, col6, col7 = st.columns(3)
                 with col5:
                     if st.button("💾 保存修改", type="primary", key=f"{edit_key_prefix}save_btn"):
                         # 更新数据
@@ -444,6 +550,19 @@ if role == "👑 管理员后台":
                         save_member_data(st.session_state.member_data)
                         st.success(f"✅ 已更新团员「{selected_member}」的信息！")
                 with col6:
+                    if st.button("🧮 计算该团员最终等级", type="secondary", key=f"{edit_key_prefix}calc_btn"):
+                        # 计算单个团员的最终等级
+                        final_grade, calc_note = calculate_final_grade(
+                            self_grade=self_grade,
+                            mutual_grade=mutual_grade,
+                            is_new_member=st.session_state.member_data.loc[member_idx, '是否新团员(未满一年)'],
+                            has_punishment=st.session_state.member_data.loc[member_idx, '是否有处分/挂科']
+                        )
+                        # 更新数据
+                        st.session_state.member_data.loc[member_idx, '最终评议等级'] = final_grade
+                        save_member_data(st.session_state.member_data)
+                        st.success(f"✅ 计算完成！{calc_note}")
+                with col7:
                     if st.button("🗑️ 删除该团员", type="secondary", key=f"{edit_key_prefix}delete_btn"):
                         # 删除数据
                         st.session_state.member_data = st.session_state.member_data.drop(member_idx).reset_index(drop=True)
@@ -497,6 +616,21 @@ if role == "👑 管理员后台":
                     save_member_data(st.session_state.member_data)
                     st.success("✅ 互评等级已根据最高得票自动填充！")
                     st.rerun()
+
+            # 新增：批量计算最终评议等级
+            st.markdown("### 🧮 最终评议等级计算")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🚀 批量计算所有团员最终等级", type="primary", key="batch_calc_final_grade_btn"):
+                    _, calc_notes = batch_calculate_final_grades()
+                    st.success("✅ 所有团员最终评议等级计算完成！")
+                    # 显示计算详情
+                    with st.expander("📋 查看计算详情", expanded=False):
+                        for note in calc_notes:
+                            st.write(note)
+            with col2:
+                if st.button("🔍 校验最终评议结果", type="secondary", key="validate_final_result_btn"):
+                    validate_evaluation(st.session_state.member_data, st.session_state.total_members)
 
             # 最终结果预览
             st.markdown("### 📋 最终评议结果预览")
