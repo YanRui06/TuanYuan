@@ -95,9 +95,53 @@ with col2:
 
 # 第二步：添加/编辑团员信息
 st.subheader("✏️ 第二步：录入/编辑团员信息")
-tab1, tab2 = st.tabs(["添加新团员", "编辑现有团员"])
+tab1, tab2, tab3 = st.tabs(["批量导入(Excel)", "添加单名团员", "编辑现有团员"])
 
 with tab1:
+    st.info("💡 提示：请确保Excel文件包含必备列：`姓名`。可选列包：`是否新团员(未满一年)`, `是否有处分/挂科`, `自评等级`, `互评等级`, `最终评议等级`, `备注`等")
+    # 可以提供一个下载模板的功能
+    template_df = pd.DataFrame(columns=['姓名', '是否新团员(未满一年)', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注'])
+    st.download_button("下载Excel模板", data=template_df.to_csv(index=False, encoding='utf-8-sig'), file_name="团员导入模板.csv", mime="text/csv")
+    
+    uploaded_file = st.file_uploader("📥 选择Excel文件进行上传", type=['xlsx', 'xls'])
+    if uploaded_file is not None:
+        if st.button("开始导入数据", type="primary"):
+            try:
+                df_imported = pd.read_excel(uploaded_file, dtype=str) # 读取为字符串防止格式问题
+                
+                # 检查必备列
+                if '姓名' not in df_imported.columns:
+                    st.error("❌ 导入失败！Excel文件中没有找到名为『姓名』的列！")
+                else:
+                    standard_cols = list(st.session_state.member_data.columns)
+                    
+                    # 处理缺失列，统一设置为默认值或空字符串
+                    for col in standard_cols:
+                        if col not in df_imported.columns:
+                            if col in ['是否新团员(未满一年)', '是否有处分/挂科']:
+                                df_imported[col] = '否'
+                            else:
+                                df_imported[col] = ''
+                    
+                    # 仅保留所需列，清理空值（将NaN和字符串nan转为空）
+                    df_imported = df_imported[standard_cols].fillna('')
+                    df_imported = df_imported.replace('nan', '')
+                    
+                    # 过滤姓名为空的行
+                    df_imported = df_imported[df_imported['姓名'].str.strip() != '']
+                    
+                    if len(df_imported) > 0:
+                        # 姓名去重合并
+                        combined_df = pd.concat([st.session_state.member_data, df_imported])
+                        combined_df = combined_df.drop_duplicates(subset=['姓名'], keep='last').reset_index(drop=True)
+                        st.session_state.member_data = combined_df
+                        st.success(f"✅ 成功读取并导入 {len(df_imported)} 名团员的数据！（如果遇到同名数据，已进行覆盖处理）")
+                    else:
+                        st.warning("⚠️ 没找到有效的团员姓名数据。")
+            except Exception as e:
+                st.error(f"❌ 读取文件出错：{str(e)}")
+
+with tab2:
     col1, col2, col3 = st.columns(3)
     with col1:
         member_name = st.text_input("团员姓名")
@@ -126,7 +170,7 @@ with tab1:
                 st.session_state.member_data = pd.concat([st.session_state.member_data, new_row], ignore_index=True)
                 st.success(f"✅ 成功添加团员：{member_name}")
 
-with tab2:
+with tab3:
     # 选择要编辑的团员
     if len(st.session_state.member_data) > 0:
         selected_member = st.selectbox("选择要编辑的团员", st.session_state.member_data['姓名'].tolist())
