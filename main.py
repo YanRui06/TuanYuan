@@ -15,6 +15,11 @@ st.set_page_config(
     layout="wide"
 )
 
+# ===================== 核心配置（可自定义）=====================
+# 管理员密码（可自行修改）
+ADMIN_PASSWORD = "123456"
+# 身份证后4位字段名
+ID_LAST4_FIELD = "身份证后4位"
 # 常量定义（数据持久化文件）
 DATA_FILE = "member_data.csv"
 VOTES_FILE = "votes_data.csv"
@@ -26,15 +31,21 @@ def load_member_data():
         try:
             df = pd.read_csv(DATA_FILE, dtype=str, encoding='utf-8-sig')
             df.fillna('', inplace=True)
+            # 确保包含身份证后4位字段
+            if ID_LAST4_FIELD not in df.columns:
+                df[ID_LAST4_FIELD] = ''
             return df
         except:
             # 兼容编码问题
             df = pd.read_csv(DATA_FILE, dtype=str, encoding='gbk')
             df.fillna('', inplace=True)
+            if ID_LAST4_FIELD not in df.columns:
+                df[ID_LAST4_FIELD] = ''
             return df
-    # 初始化空数据表
+    # 初始化空数据表（新增身份证后4位字段）
     return pd.DataFrame({
         '姓名': [],
+        ID_LAST4_FIELD: [],
         '是否新团员(未满一年)': [],
         '是否有处分/挂科': [],
         '自评等级': [],
@@ -80,6 +91,16 @@ if 'total_members' not in st.session_state:
     member_count = len(st.session_state.member_data)
     st.session_state.total_members = member_count if member_count > 0 else 1
 
+# 新增：管理员登录状态
+if 'admin_logged' not in st.session_state:
+    st.session_state.admin_logged = False
+
+# 新增：团员身份验证状态
+if 'voter_verified' not in st.session_state:
+    st.session_state.voter_verified = False
+if 'verified_voter_name' not in st.session_state:
+    st.session_state.verified_voter_name = ""
+
 # ===================== 核心业务函数 =====================
 def validate_evaluation(df, total_members):
     """校验评优规则：优秀比例、挂科/新团员限制"""
@@ -109,8 +130,8 @@ def validate_evaluation(df, total_members):
 def generate_excel(df, class_name):
     """生成最终导出的Excel表格（CSV格式，Excel可直接打开）"""
     # 整理输出格式
-    output_df = df[['姓名', '是否新团员(未满一年)', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注']].copy()
-    output_df.columns = ['姓名', '是否新团员', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注']
+    output_df = df[['姓名', ID_LAST4_FIELD, '是否新团员(未满一年)', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注']].copy()
+    output_df.columns = ['姓名', '身份证后4位', '是否新团员', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注']
     
     # 添加统计信息行
     total_members = st.session_state.total_members
@@ -118,7 +139,8 @@ def generate_excel(df, class_name):
     actual_excellent = len(df[df['最终评议等级'] == '优秀'])
     stats_df = pd.DataFrame({
         '姓名': ['统计信息', '', ''],
-        '是否新团员': [f'团支部总人数：{total_members}', f'优秀上限：{max_excellent}', f'实际优秀人数：{actual_excellent}'],
+        '身份证后4位': [f'团支部总人数：{total_members}', f'优秀上限：{max_excellent}', f'实际优秀人数：{actual_excellent}'],
+        '是否新团员': ['', '', ''],
         '是否有处分/挂科': ['', '', ''],
         '自评等级': ['', '', ''],
         '互评等级': ['', '', ''],
@@ -128,6 +150,20 @@ def generate_excel(df, class_name):
     
     final_df = pd.concat([output_df, stats_df], ignore_index=True)
     return final_df
+
+def verify_id_last4(name, input_id_last4):
+    """验证团员身份证后4位"""
+    df = st.session_state.member_data
+    member_info = df[df['姓名'] == name]
+    if len(member_info) == 0:
+        return False, "未找到该团员信息"
+    true_id_last4 = member_info[ID_LAST4_FIELD].iloc[0]
+    if true_id_last4 == '' or true_id_last4 is None:
+        return False, "该团员未录入身份证后4位信息，请联系管理员"
+    if input_id_last4 == true_id_last4:
+        return True, "身份验证成功"
+    else:
+        return False, "身份证后4位输入错误，请重新输入"
 
 # ===================== 页面主体 =====================
 # 侧边栏：角色选择
@@ -140,275 +176,314 @@ role = st.sidebar.radio(
 st.sidebar.info("💡 提示：管理员先录入名册，团员再进行投票")
 st.sidebar.divider()
 st.sidebar.markdown("#### 📞 操作说明")
-st.sidebar.markdown("1. 管理员：导入名单 → 查看投票 → 结算结果\n2. 团员：选择姓名 → 完成互评/自评 → 提交")
+st.sidebar.markdown("1. 管理员：输入密码登录 → 导入名单 → 查看投票 → 结算结果\n2. 团员：验证身份 → 完成互评/自评 → 提交")
 
-# ===================== 管理员后台 =====================
+# ===================== 管理员后台（新增密码验证）=====================
 if role == "👑 管理员后台":
-    st.title("🏫 管理员后台 - 团员教育评议管理系统")
-    st.divider()
+    # 未登录时显示密码输入框
+    if not st.session_state.admin_logged:
+        st.title("🔒 管理员后台 - 身份验证")
+        st.divider()
+        password_input = st.text_input("请输入管理员密码", type="password", placeholder="输入密码后按回车")
+        
+        if password_input == ADMIN_PASSWORD:
+            st.session_state.admin_logged = True
+            st.success("✅ 登录成功！正在进入管理员后台...")
+            st.rerun()
+        elif password_input != "":
+            st.error("❌ 密码错误，请重新输入！")
+        st.info("💡 若忘记密码，请修改代码中的 ADMIN_PASSWORD 常量")
+    # 已登录显示管理员后台
+    else:
+        st.title("🏫 管理员后台 - 团员教育评议管理系统")
+        st.divider()
+        
+        # 显示退出登录按钮
+        if st.sidebar.button("🚪 退出管理员登录", type="secondary"):
+            st.session_state.admin_logged = False
+            st.rerun()
 
-    # 第一步：团支部基础信息设置
-    st.subheader("📋 第一步：团支部基础信息")
-    col1, col2 = st.columns(2)
-    with col1:
-        class_name = st.text_input(
-            "请输入班级名称（如：2023级计算机1班）",
-            value=st.session_state.class_name,
-            placeholder="例：2023级汉语言文学2班"
-        )
-        st.session_state.class_name = class_name
-    with col2:
-        total_members = st.number_input(
-            "团支部总人数（智慧团建人数）",
-            min_value=1,
-            value=st.session_state.total_members,
-            help="优秀名额=总人数×30%（向下取整）"
-        )
-        st.session_state.total_members = total_members
-
-    # 第二步：团员信息管理（导入/添加/编辑）
-    st.subheader("✏️ 第二步：团员信息管理")
-    tab1, tab2, tab3 = st.tabs(["📤 批量导入(Excel)", "➕ 添加单名团员", "✂️ 编辑/删除团员"])
-
-    # 标签页1：批量导入Excel
-    with tab1:
-        st.info("💡 模板说明：必须包含「姓名」列，可选列「是否新团员(未满一年)」「是否有处分/挂科」")
-        # 下载模板
-        template_df = pd.DataFrame({
-            '姓名': ['张三', '李四', '王五'],
-            '是否新团员(未满一年)': ['否', '是', '否'],
-            '是否有处分/挂科': ['否', '否', '是'],
-            '自评等级': ['', '', ''],
-            '互评等级': ['', '', ''],
-            '最终评议等级': ['', '不参评', ''],
-            '备注': ['', '', '挂科2门']
-        })
-        st.download_button(
-            label="📥 下载导入模板（CSV/Excel可打开）",
-            data=template_df.to_csv(index=False, encoding='utf-8-sig'),
-            file_name=f"{class_name}团员导入模板.csv",
-            mime="text/csv"
-        )
-
-        # 文件上传
-        uploaded_file = st.file_uploader(
-            "选择Excel/CSV文件上传",
-            type=['xlsx', 'xls', 'csv'],
-            help="支持.xlsx/.xls/.csv格式，优先读取「姓名」列"
-        )
-
-        if uploaded_file is not None:
-            if st.button("🚀 开始导入数据", type="primary"):
-                try:
-                    # 读取上传文件
-                    if uploaded_file.name.endswith('.csv'):
-                        df_imported = pd.read_csv(uploaded_file, dtype=str, encoding='utf-8-sig')
-                    else:
-                        df_imported = pd.read_excel(uploaded_file, dtype=str)
-                    df_imported.fillna('', inplace=True)
-
-                    # 校验必备列
-                    if '姓名' not in df_imported.columns:
-                        st.error("❌ 导入失败！文件中未找到「姓名」列，请检查模板格式")
-                    else:
-                        # 补全缺失列
-                        standard_cols = list(st.session_state.member_data.columns)
-                        for col in standard_cols:
-                            if col not in df_imported.columns:
-                                if col in ['是否新团员(未满一年)', '是否有处分/挂科']:
-                                    df_imported[col] = '否'  # 默认非新团员、无处分
-                                else:
-                                    df_imported[col] = ''     # 其他列默认空
-
-                        # 数据清洗：去空、去重
-                        df_imported = df_imported[standard_cols]
-                        df_imported = df_imported.replace('nan', '')
-                        df_imported = df_imported[df_imported['姓名'].str.strip() != '']  # 过滤空姓名
-                        df_imported = df_imported.drop_duplicates(subset=['姓名'], keep='last')  # 去重
-
-                        # 合并数据（覆盖原有同名数据）
-                        combined_df = pd.concat([st.session_state.member_data, df_imported])
-                        combined_df = combined_df.drop_duplicates(subset=['姓名'], keep='last').reset_index(drop=True)
-                        
-                        # 自动给新团员标记「不参评」
-                        combined_df.loc[combined_df['是否新团员(未满一年)'] == '是', '最终评议等级'] = '不参评'
-
-                        # 保存并更新会话状态
-                        st.session_state.member_data = combined_df
-                        save_member_data(combined_df)
-
-                        st.success(f"✅ 导入成功！共导入 {len(df_imported)} 名团员，当前总人数：{len(combined_df)}")
-                except Exception as e:
-                    st.error(f"❌ 导入出错：{str(e)}，请检查文件格式或联系管理员")
-
-    # 标签页2：添加单名团员
-    with tab2:
-        col1, col2, col3 = st.columns(3)
+        # 第一步：团支部基础信息设置
+        st.subheader("📋 第一步：团支部基础信息")
+        col1, col2 = st.columns(2)
         with col1:
-            member_name = st.text_input("团员姓名", placeholder="请输入真实姓名")
+            class_name = st.text_input(
+                "请输入班级名称（如：2023级计算机1班）",
+                value=st.session_state.class_name,
+                placeholder="例：2023级汉语言文学2班"
+            )
+            st.session_state.class_name = class_name
         with col2:
-            is_new_member = st.selectbox("是否新团员(未满一年)", ["否", "是"])
-        with col3:
-            has_punishment = st.selectbox("是否有处分/挂科", ["否", "是"])
+            total_members = st.number_input(
+                "团支部总人数（智慧团建人数）",
+                min_value=1,
+                value=st.session_state.total_members,
+                help="优秀名额=总人数×30%（向下取整）"
+            )
+            st.session_state.total_members = total_members
 
-        if st.button("➕ 添加团员", type="primary"):
-            if not member_name:
-                st.warning("⚠️ 请输入团员姓名！")
-            elif member_name in st.session_state.member_data['姓名'].tolist():
-                st.warning(f"⚠️ 团员「{member_name}」已存在，请勿重复添加！")
+        # 第二步：团员信息管理（导入/添加/编辑）
+        st.subheader("✏️ 第二步：团员信息管理（含身份证后4位）")
+        tab1, tab2, tab3 = st.tabs(["📤 批量导入(Excel)", "➕ 添加单名团员", "✂️ 编辑/删除团员"])
+
+        # 标签页1：批量导入Excel（新增身份证后4位字段）
+        with tab1:
+            st.info(f"💡 模板说明：必须包含「姓名」列，建议包含「{ID_LAST4_FIELD}」列（用于团员身份验证）")
+            # 下载模板（新增身份证后4位）
+            template_df = pd.DataFrame({
+                '姓名': ['张三', '李四', '王五'],
+                ID_LAST4_FIELD: ['1234', '5678', '9012'],
+                '是否新团员(未满一年)': ['否', '是', '否'],
+                '是否有处分/挂科': ['否', '否', '是'],
+                '自评等级': ['', '', ''],
+                '互评等级': ['', '', ''],
+                '最终评议等级': ['', '不参评', ''],
+                '备注': ['', '', '挂科2门']
+            })
+            st.download_button(
+                label="📥 下载导入模板（CSV/Excel可打开）",
+                data=template_df.to_csv(index=False, encoding='utf-8-sig'),
+                file_name=f"{class_name}团员导入模板.csv",
+                mime="text/csv"
+            )
+
+            # 文件上传
+            uploaded_file = st.file_uploader(
+                "选择Excel/CSV文件上传",
+                type=['xlsx', 'xls', 'csv'],
+                help="支持.xlsx/.xls/.csv格式，优先读取「姓名」和「身份证后4位」列"
+            )
+
+            if uploaded_file is not None:
+                if st.button("🚀 开始导入数据", type="primary"):
+                    try:
+                        # 读取上传文件
+                        if uploaded_file.name.endswith('.csv'):
+                            df_imported = pd.read_csv(uploaded_file, dtype=str, encoding='utf-8-sig')
+                        else:
+                            df_imported = pd.read_excel(uploaded_file, dtype=str)
+                        df_imported.fillna('', inplace=True)
+
+                        # 校验必备列
+                        if '姓名' not in df_imported.columns:
+                            st.error("❌ 导入失败！文件中未找到「姓名」列，请检查模板格式")
+                        else:
+                            # 补全缺失列
+                            standard_cols = list(st.session_state.member_data.columns)
+                            for col in standard_cols:
+                                if col not in df_imported.columns:
+                                    if col == ID_LAST4_FIELD:
+                                        df_imported[col] = ''  # 身份证后4位默认空
+                                    elif col in ['是否新团员(未满一年)', '是否有处分/挂科']:
+                                        df_imported[col] = '否'  # 默认非新团员、无处分
+                                    else:
+                                        df_imported[col] = ''     # 其他列默认空
+
+                            # 数据清洗：去空、去重
+                            df_imported = df_imported[standard_cols]
+                            df_imported = df_imported.replace('nan', '')
+                            df_imported = df_imported[df_imported['姓名'].str.strip() != '']  # 过滤空姓名
+                            df_imported = df_imported.drop_duplicates(subset=['姓名'], keep='last')  # 去重
+
+                            # 自动给新团员标记「不参评」
+                            df_imported.loc[df_imported['是否新团员(未满一年)'] == '是', '最终评议等级'] = '不参评'
+
+                            # 合并数据（覆盖原有同名数据）
+                            combined_df = pd.concat([st.session_state.member_data, df_imported])
+                            combined_df = combined_df.drop_duplicates(subset=['姓名'], keep='last').reset_index(drop=True)
+
+                            # 保存并更新会话状态
+                            st.session_state.member_data = combined_df
+                            save_member_data(combined_df)
+
+                            st.success(f"✅ 导入成功！共导入 {len(df_imported)} 名团员，当前总人数：{len(combined_df)}")
+                            # 提示身份证信息
+                            empty_id_count = len(combined_df[combined_df[ID_LAST4_FIELD] == ''])
+                            if empty_id_count > 0:
+                                st.warning(f"⚠️ 有 {empty_id_count} 名团员未录入身份证后4位信息，无法进行身份验证投票！")
+                    except Exception as e:
+                        st.error(f"❌ 导入出错：{str(e)}，请检查文件格式或联系管理员")
+
+        # 标签页2：添加单名团员（新增身份证后4位）
+        with tab2:
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                member_name = st.text_input("团员姓名", placeholder="请输入真实姓名")
+            with col2:
+                id_last4 = st.text_input(f"{ID_LAST4_FIELD}", placeholder="如：1234")
+            with col3:
+                is_new_member = st.selectbox("是否新团员(未满一年)", ["否", "是"])
+            with col4:
+                has_punishment = st.selectbox("是否有处分/挂科", ["否", "是"])
+
+            if st.button("➕ 添加团员", type="primary"):
+                if not member_name:
+                    st.warning("⚠️ 请输入团员姓名！")
+                elif member_name in st.session_state.member_data['姓名'].tolist():
+                    st.warning(f"⚠️ 团员「{member_name}」已存在，请勿重复添加！")
+                else:
+                    # 构建新团员数据
+                    new_row = pd.DataFrame({
+                        '姓名': [member_name],
+                        ID_LAST4_FIELD: [id_last4],
+                        '是否新团员(未满一年)': [is_new_member],
+                        '是否有处分/挂科': [has_punishment],
+                        '自评等级': [""],
+                        '互评等级': [""],
+                        '最终评议等级': ["不参评" if is_new_member == "是" else ""],
+                        '备注': [""]
+                    })
+                    # 合并并保存
+                    st.session_state.member_data = pd.concat([st.session_state.member_data, new_row], ignore_index=True)
+                    save_member_data(st.session_state.member_data)
+                    st.success(f"✅ 成功添加团员：{member_name}")
+                    if id_last4 == "":
+                        st.warning("⚠️ 未录入身份证后4位，该团员将无法进行投票验证！")
+
+        # 标签页3：编辑/删除团员（新增身份证后4位编辑）
+        with tab3:
+            if len(st.session_state.member_data) == 0:
+                st.info("📭 暂无团员数据，请先导入/添加！")
             else:
-                # 构建新团员数据
-                new_row = pd.DataFrame({
-                    '姓名': [member_name],
-                    '是否新团员(未满一年)': [is_new_member],
-                    '是否有处分/挂科': [has_punishment],
-                    '自评等级': [""],
-                    '互评等级': [""],
-                    '最终评议等级': ["不参评" if is_new_member == "是" else ""],
-                    '备注': [""]
-                })
-                # 合并并保存
-                st.session_state.member_data = pd.concat([st.session_state.member_data, new_row], ignore_index=True)
-                save_member_data(st.session_state.member_data)
-                st.success(f"✅ 成功添加团员：{member_name}")
+                # 选择要编辑的团员
+                selected_member = st.selectbox("选择要编辑的团员", st.session_state.member_data['姓名'].tolist())
+                member_idx = st.session_state.member_data[st.session_state.member_data['姓名'] == selected_member].index[0]
+                
+                # 编辑表单（新增身份证后4位）
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    id_last4 = st.text_input(
+                        f"{ID_LAST4_FIELD}",
+                        value=st.session_state.member_data.loc[member_idx, ID_LAST4_FIELD],
+                        placeholder="如：1234"
+                    )
+                with col2:
+                    self_grade = st.selectbox(
+                        "自评等级",
+                        ["", "优秀", "合格", "基本合格", "不合格"],
+                        index=["", "优秀", "合格", "基本合格", "不合格"].index(st.session_state.member_data.loc[member_idx, '自评等级'])
+                    )
+                with col3:
+                    mutual_grade = st.selectbox(
+                        "互评等级",
+                        ["", "优秀", "合格", "基本合格", "不合格"],
+                        index=["", "优秀", "合格", "基本合格", "不合格"].index(st.session_state.member_data.loc[member_idx, '互评等级'])
+                    )
+                with col4:
+                    # 新团员锁定为不参评
+                    if st.session_state.member_data.loc[member_idx, '是否新团员(未满一年)'] == '是':
+                        final_grade = st.selectbox("最终评议等级", ["不参评"], disabled=True)
+                    else:
+                        final_grade = st.selectbox(
+                            "最终评议等级",
+                            ["", "优秀", "合格", "基本合格", "不合格"],
+                            index=["", "优秀", "合格", "基本合格", "不合格"].index(st.session_state.member_data.loc[member_idx, '最终评议等级'])
+                        )
+                
+                note = st.text_input("备注信息", value=st.session_state.member_data.loc[member_idx, '备注'])
 
-    # 标签页3：编辑/删除团员
-    with tab3:
+                # 操作按钮
+                col5, col6 = st.columns(2)
+                with col5:
+                    if st.button("💾 保存修改", type="primary"):
+                        # 更新数据
+                        st.session_state.member_data.loc[member_idx, ID_LAST4_FIELD] = id_last4
+                        st.session_state.member_data.loc[member_idx, '自评等级'] = self_grade
+                        st.session_state.member_data.loc[member_idx, '互评等级'] = mutual_grade
+                        st.session_state.member_data.loc[member_idx, '最终评议等级'] = final_grade
+                        st.session_state.member_data.loc[member_idx, '备注'] = note
+                        save_member_data(st.session_state.member_data)
+                        st.success(f"✅ 已更新团员「{selected_member}」的信息！")
+                with col6:
+                    if st.button("🗑️ 删除该团员", type="secondary"):
+                        # 删除数据
+                        st.session_state.member_data = st.session_state.member_data.drop(member_idx).reset_index(drop=True)
+                        save_member_data(st.session_state.member_data)
+                        st.success(f"✅ 已删除团员：{selected_member}")
+                        st.rerun()  # 刷新页面
+
+        # 第三步：投票数据统计与结果结算
+        st.subheader("📊 第三步：投票统计与结果结算")
         if len(st.session_state.member_data) == 0:
             st.info("📭 暂无团员数据，请先导入/添加！")
         else:
-            # 选择要编辑的团员
-            selected_member = st.selectbox("选择要编辑的团员", st.session_state.member_data['姓名'].tolist())
-            member_idx = st.session_state.member_data[st.session_state.member_data['姓名'] == selected_member].index[0]
+            # 加载投票数据
+            df_votes = load_votes_data()
+            st.write(f"📈 投票进度：已有 **{len(df_votes)}** 人完成投票（总人数：{len(st.session_state.member_data)}）")
             
-            # 编辑表单
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                self_grade = st.selectbox(
-                    "自评等级",
-                    ["", "优秀", "合格", "基本合格", "不合格"],
-                    index=["", "优秀", "合格", "基本合格", "不合格"].index(st.session_state.member_data.loc[member_idx, '自评等级'])
-                )
-            with col2:
-                mutual_grade = st.selectbox(
-                    "互评等级",
-                    ["", "优秀", "合格", "基本合格", "不合格"],
-                    index=["", "优秀", "合格", "基本合格", "不合格"].index(st.session_state.member_data.loc[member_idx, '互评等级'])
-                )
-            with col3:
-                # 新团员锁定为不参评
-                if st.session_state.member_data.loc[member_idx, '是否新团员(未满一年)'] == '是':
-                    final_grade = st.selectbox("最终评议等级", ["不参评"], disabled=True)
-                else:
-                    final_grade = st.selectbox(
-                        "最终评议等级",
-                        ["", "优秀", "合格", "基本合格", "不合格"],
-                        index=["", "优秀", "合格", "基本合格", "不合格"].index(st.session_state.member_data.loc[member_idx, '最终评议等级'])
-                    )
-            
-            note = st.text_input("备注信息", value=st.session_state.member_data.loc[member_idx, '备注'])
-
-            # 操作按钮
-            col4, col5 = st.columns(2)
-            with col4:
-                if st.button("💾 保存修改", type="primary"):
-                    # 更新数据
-                    st.session_state.member_data.loc[member_idx, '自评等级'] = self_grade
-                    st.session_state.member_data.loc[member_idx, '互评等级'] = mutual_grade
-                    st.session_state.member_data.loc[member_idx, '最终评议等级'] = final_grade
-                    st.session_state.member_data.loc[member_idx, '备注'] = note
+            # 实时票数统计
+            if len(df_votes) > 0:
+                st.markdown("### 📝 实时互评票数统计")
+                # 初始化票数统计字典
+                vote_counts = {
+                    name: {"优秀": 0, "合格": 0, "基本合格": 0, "不合格": 0} 
+                    for name in st.session_state.member_data['姓名'].tolist()
+                }
+                
+                # 解析所有投票数据
+                for _, row in df_votes.iterrows():
+                    try:
+                        votes = json.loads(row['投票详情'])
+                        for p_name, p_grade in votes.items():
+                            if p_name in vote_counts and p_grade in vote_counts[p_name]:
+                                vote_counts[p_name][p_grade] += 1
+                    except:
+                        continue  # 跳过格式错误的投票数据
+                
+                # 展示票数表格
+                stats_df = pd.DataFrame.from_dict(vote_counts, orient='index').reset_index()
+                stats_df.rename(columns={'index': '姓名'}, inplace=True)
+                st.dataframe(stats_df, use_container_width=True)
+                
+                # 一键结算互评等级
+                if st.button("🪄 根据最高票自动结算「互评等级」", type="primary"):
+                    for idx, row in st.session_state.member_data.iterrows():
+                        name = row['姓名']
+                        if name in vote_counts:
+                            # 找到最高票的等级
+                            max_grade = max(vote_counts[name], key=vote_counts[name].get)
+                            # 有票数才更新
+                            if sum(vote_counts[name].values()) > 0:
+                                st.session_state.member_data.loc[idx, '互评等级'] = max_grade
                     save_member_data(st.session_state.member_data)
-                    st.success(f"✅ 已更新团员「{selected_member}」的信息！")
-            with col5:
-                if st.button("🗑️ 删除该团员", type="secondary"):
-                    # 删除数据
-                    st.session_state.member_data = st.session_state.member_data.drop(member_idx).reset_index(drop=True)
-                    save_member_data(st.session_state.member_data)
-                    st.success(f"✅ 已删除团员：{selected_member}")
-                    st.rerun()  # 刷新页面
+                    st.success("✅ 互评等级已根据最高得票自动填充！")
+                    st.rerun()
 
-    # 第三步：投票数据统计与结果结算
-    st.subheader("📊 第三步：投票统计与结果结算")
-    if len(st.session_state.member_data) == 0:
-        st.info("📭 暂无团员数据，请先导入/添加！")
-    else:
-        # 加载投票数据
-        df_votes = load_votes_data()
-        st.write(f"📈 投票进度：已有 **{len(df_votes)}** 人完成投票（总人数：{len(st.session_state.member_data)}）")
-        
-        # 实时票数统计
-        if len(df_votes) > 0:
-            st.markdown("### 📝 实时互评票数统计")
-            # 初始化票数统计字典
-            vote_counts = {
-                name: {"优秀": 0, "合格": 0, "基本合格": 0, "不合格": 0} 
-                for name in st.session_state.member_data['姓名'].tolist()
-            }
-            
-            # 解析所有投票数据
-            for _, row in df_votes.iterrows():
-                try:
-                    votes = json.loads(row['投票详情'])
-                    for p_name, p_grade in votes.items():
-                        if p_name in vote_counts and p_grade in vote_counts[p_name]:
-                            vote_counts[p_name][p_grade] += 1
-                except:
-                    continue  # 跳过格式错误的投票数据
-            
-            # 展示票数表格
-            stats_df = pd.DataFrame.from_dict(vote_counts, orient='index').reset_index()
-            stats_df.rename(columns={'index': '姓名'}, inplace=True)
-            st.dataframe(stats_df, use_container_width=True)
-            
-            # 一键结算互评等级
-            if st.button("🪄 根据最高票自动结算「互评等级」", type="primary"):
-                for idx, row in st.session_state.member_data.iterrows():
-                    name = row['姓名']
-                    if name in vote_counts:
-                        # 找到最高票的等级
-                        max_grade = max(vote_counts[name], key=vote_counts[name].get)
-                        # 有票数才更新
-                        if sum(vote_counts[name].values()) > 0:
-                            st.session_state.member_data.loc[idx, '互评等级'] = max_grade
-                save_member_data(st.session_state.member_data)
-                st.success("✅ 互评等级已根据最高得票自动填充！")
-                st.rerun()
+            # 最终结果预览
+            st.markdown("### 📋 最终评议结果预览")
+            st.dataframe(st.session_state.member_data, use_container_width=True)
 
-        # 最终结果预览
-        st.markdown("### 📋 最终评议结果预览")
-        st.dataframe(st.session_state.member_data, use_container_width=True)
+            # 规则校验与导出
+            col7, col8 = st.columns(2)
+            with col7:
+                if st.button("🔍 校验评优规则", type="primary"):
+                    validate_evaluation(st.session_state.member_data, st.session_state.total_members)
+            with col8:
+                if st.button("📤 导出最终结果（Excel/CSV）", type="secondary"):
+                    if validate_evaluation(st.session_state.member_data, st.session_state.total_members):
+                        final_df = generate_excel(st.session_state.member_data, st.session_state.class_name)
+                        # 下载按钮
+                        st.download_button(
+                            label="💾 点击下载表格",
+                            data=final_df.to_csv(index=False, encoding='utf-8-sig'),
+                            file_name=f"{st.session_state.class_name}团员教育评议结果.csv",
+                            mime="text/csv"
+                        )
 
-        # 规则校验与导出
-        col6, col7 = st.columns(2)
-        with col6:
-            if st.button("🔍 校验评优规则", type="primary"):
-                validate_evaluation(st.session_state.member_data, st.session_state.total_members)
-        with col7:
-            if st.button("📤 导出最终结果（Excel/CSV）", type="secondary"):
-                if validate_evaluation(st.session_state.member_data, st.session_state.total_members):
-                    final_df = generate_excel(st.session_state.member_data, st.session_state.class_name)
-                    # 下载按钮
-                    st.download_button(
-                        label="💾 点击下载表格",
-                        data=final_df.to_csv(index=False, encoding='utf-8-sig'),
-                        file_name=f"{st.session_state.class_name}团员教育评议结果.csv",
-                        mime="text/csv"
-                    )
+        # 数据清空功能
+        st.divider()
+        if st.button("🆘 清空全部数据（含团员+投票）", type="secondary"):
+            # 删除持久化文件
+            if os.path.exists(DATA_FILE):
+                os.remove(DATA_FILE)
+            if os.path.exists(VOTES_FILE):
+                os.remove(VOTES_FILE)
+            # 重置会话状态
+            st.session_state.member_data = load_member_data()
+            st.session_state.total_members = 1
+            st.success("✅ 已清空所有数据！请刷新页面生效")
 
-    # 数据清空功能
-    st.divider()
-    if st.button("🆘 清空全部数据（含团员+投票）", type="secondary"):
-        # 删除持久化文件
-        if os.path.exists(DATA_FILE):
-            os.remove(DATA_FILE)
-        if os.path.exists(VOTES_FILE):
-            os.remove(VOTES_FILE)
-        # 重置会话状态
-        st.session_state.member_data = load_member_data()
-        st.session_state.total_members = 1
-        st.success("✅ 已清空所有数据！请刷新页面生效")
-
-# ===================== 团员投票通道 =====================
+# ===================== 团员投票通道（新增身份验证）=====================
 elif role == "🗳️ 团员投票通道":
     st.title("🗳️ 团员民主互评投票通道")
     st.divider()
@@ -420,15 +495,48 @@ elif role == "🗳️ 团员投票通道":
     if len(df_mem) == 0:
         st.warning("⚠️ 管理员尚未录入团员名单，暂无法投票！")
     else:
-        # 第一步：选择投票人身份
-        all_names = df_mem['姓名'].tolist()
-        voter_name = st.selectbox(
-            "🤔 请选择您的姓名（仅可投票一次）",
-            ["请选择..."] + all_names,
-            index=0
-        )
+        # 第一步：身份验证（姓名+身份证后4位）
+        if not st.session_state.voter_verified:
+            st.subheader("🔐 团员身份验证")
+            col1, col2 = st.columns(2)
+            with col1:
+                voter_name = st.selectbox(
+                    "请选择您的姓名",
+                    ["请选择..."] + df_mem['姓名'].tolist(),
+                    index=0,
+                    key="voter_name_select"
+                )
+            with col2:
+                input_id_last4 = st.text_input(
+                    f"请输入{ID_LAST4_FIELD}",
+                    type="password",
+                    placeholder="如：1234",
+                    key="id_last4_input"
+                )
+            
+            if st.button("✅ 验证身份", type="primary"):
+                if voter_name == "请选择...":
+                    st.warning("⚠️ 请先选择您的姓名！")
+                elif input_id_last4 == "":
+                    st.warning("⚠️ 请输入身份证后4位！")
+                else:
+                    is_verified, msg = verify_id_last4(voter_name, input_id_last4)
+                    if is_verified:
+                        st.session_state.voter_verified = True
+                        st.session_state.verified_voter_name = voter_name
+                        st.success(f"🎉 {msg}，正在进入投票页面...")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+        # 身份验证通过后显示投票页面
+        else:
+            voter_name = st.session_state.verified_voter_name
+            # 显示退出验证按钮
+            if st.sidebar.button("🚪 退出身份验证", type="secondary"):
+                st.session_state.voter_verified = False
+                st.session_state.verified_voter_name = ""
+                st.rerun()
 
-        if voter_name != "请选择...":
             # 检查是否已投票
             df_votes = load_votes_data()
             voted_list = df_votes['投票人'].tolist()
