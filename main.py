@@ -150,8 +150,10 @@ def validate_evaluation(df, total_members):
 def generate_excel(df, class_name):
     """生成最终导出的Excel表格（CSV格式，Excel可直接打开）"""
     # 整理输出格式
-    output_df = df[['姓名', ID_LAST4_FIELD, '是否新团员(未满一年)', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注']].copy()
-    output_df.columns = ['姓名', '身份证后4位', '是否新团员', '是否有处分/挂科', '自评等级', '互评等级', '最终评议等级', '备注']
+    output_df = df[['姓名', ID_LAST4_FIELD, '是否新团员(未满一年)', '是否有处分/挂科', 
+                   '自评等级', '互评等级', '最终评议等级', '备注']].copy()
+    output_df.columns = ['姓名', '身份证后4位', '是否新团员', '是否有处分/挂科', 
+                        '自评等级', '互评等级', '最终评议等级', '备注']
     
     # 添加统计信息行
     total_members = st.session_state.total_members
@@ -578,6 +580,44 @@ if role == "👑 管理员后台":
             # 加载投票数据
             df_votes = load_votes_data()
             st.write(f"📈 投票进度：已有 **{len(df_votes)}** 人完成投票（总人数：{len(st.session_state.member_data)}）")
+            
+            # ========== 新增：管理员查看投票明细（合规版） ==========
+            if len(df_votes) > 0:
+                st.markdown("### 🔍 投票明细查看（仅管理员可见）")
+                # 二次确认：防止误操作
+                if st.checkbox("✅ 我确认需要查看投票明细（仅用于合规监管）", key="confirm_view_votes"):
+                    # 解析所有投票明细并整理为表格
+                    vote_details = []
+                    for _, row in df_votes.iterrows():
+                        voter = row['投票人']
+                        try:
+                            votes = json.loads(row['投票详情'])
+                            for target_name, grade in votes.items():
+                                vote_details.append({
+                                    "投票人": voter,
+                                    "被投票人": target_name,
+                                    "投票等级": grade
+                                })
+                        except Exception as e:
+                            vote_details.append({
+                                "投票人": voter,
+                                "被投票人": "解析失败",
+                                "投票等级": f"错误：{str(e)}"
+                            })
+                    
+                    # 转换为DataFrame展示
+                    details_df = pd.DataFrame(vote_details)
+                    st.dataframe(details_df, use_container_width=True, key="vote_details_df")
+                    
+                    # 可选：导出明细（用于存档）
+                    st.download_button(
+                        label="📤 导出投票明细（仅管理员）",
+                        data=details_df.to_csv(index=False, encoding='utf-8-sig'),
+                        file_name=f"{st.session_state.class_name}投票明细_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        key="download_vote_details_btn"
+                    )
+            # ========== 新增结束 ==========
             
             # 实时票数统计
             if len(df_votes) > 0:
